@@ -1,5 +1,5 @@
 {
-    "name": "Plotune stream Extension",
+    "name": "Plotune Stream Extension",
     "id": "plotune_stream_ext",
     "version": "1.0.0",
     "description": "Random data generator for stream environment in Plotune",
