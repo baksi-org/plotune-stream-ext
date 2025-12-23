@@ -1,0 +1,31 @@
+{
+    "name": "Plotune stream Extension",
+    "id": "plotune_stream_ext",
+    "version": "1.0.0",
+    "description": "Random data generator for stream environment in Plotune",
+    "mode": "online",
+    "author": "Plotune SDK Team",
+    "cmd": [
+        "python",
+        "main.py"
+    ],
+    "enabled": true,
+    "last_updated": "2024-12-01T10:00:00Z",
+    "git_path": "https://github.com/baksi-org/plotune-stream-ext",
+    "category": "Utility",
+    "post_url": "",
+    "webpage": "www.plotune.net",
+    "file_formats": [],
+    "ask_form": true,
+    "connection": {
+        "ip": "127.0.0.1",
+        "port": 0,
+        "target": "127.0.0.1",
+        "target_port": 8000
+    },
+    "configuration": {
+        "write_interval":0.2,
+        "bridge_interval":0.02,
+        "secure_bridge":false
+    }
+}
