@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import deque
 from plotune_sdk import PlotuneRuntime
 from plotune_sdk.src.streams import PlotuneStream
 from plotune_sdk.models import Variable
@@ -22,18 +23,20 @@ class StreamAgent:
 
         self.write_interval = float(self.custom_config.get("write_interval", 0.2))
         self.bridge_interval = float(self.custom_config.get("bridge_interval", 0.02))
-        self.secure_bridge = self.custom_config.get("secure_bridge",False)
+        self.secure_bridge = self.custom_config.get("secure_bridge", False)
 
         self._runtime: Optional[PlotuneRuntime] = None
         self._api: Optional[FastAPI] = None
 
-        self.signals:Dict[str, ConsumeSignal] = {}
+        self.signals: Dict[str, ConsumeSignal] = {}
         self._signal_lock = asyncio.Lock()
 
-        self.bridges:Dict[Variable, List[Bridge, asyncio.Queue]] = []
+        self.bridges: Dict[str, dict] = {}  # variable.name -> {"bridge": Bridge, "queue": asyncio.Queue}
         
-        self.central_queue = asyncio.Queue(1234)
-
+        # Round-robin
+        self.bridge_order = deque()
+        self._bridge_lock = asyncio.Lock()
+        
         self._stream_producer_status = False
         self._register_events()
 
@@ -48,22 +51,37 @@ class StreamAgent:
 
     async def on_bridge(self, variable: Variable):
         print(f"{variable.name} requested to stream")
-        bridge = Bridge(variable, 
-                        secure=False, 
-                        queue=self.central_queue, 
-                        interval=self.bridge_interval
-                        )
+                
+        bridge = Bridge(
+            variable, 
+            secure=False, 
+            interval=self.bridge_interval
+        )
+        
         q = bridge.start()
-        self.bridges[variable] = [bridge, q]
+        
+        async with self._bridge_lock:
+            self.bridges[variable.name] = {
+                "bridge": bridge,
+                "queue": q,
+                "variable": variable
+            }
+            self.bridge_order.append(variable.name)
+            
+        print(f"{variable.name} bridged with separate queue")
 
     async def on_unbridge(self, variable: Variable):
         print(f"{variable.name} requested to remove from stream")
-        bridge, q = self.bridges[variable]
-
-        self.bridges.pop(variable)
-
-        await bridge.stop()
-
+        
+        async with self._bridge_lock:
+            if variable.name in self.bridges:
+                bridge_info = self.bridges[variable.name]
+                await bridge_info["bridge"].stop()
+                del self.bridges[variable.name]
+                
+                
+                if variable.name in self.bridge_order:
+                    self.bridge_order.remove(variable.name)
 
     async def _handle_form(self, data: dict) -> Any:
         print("Form requested")
@@ -78,6 +96,7 @@ class StreamAgent:
 
         stream = self.runtime.create_stream(stream_name)
         asyncio.run_coroutine_threadsafe(self.runtime._ensure_stream_running(stream), self.runtime.loop)
+        
         if stream_type == "consumer":
             stream.on_consume()(self.listen_stream)
 
@@ -86,17 +105,49 @@ class StreamAgent:
 
         return {"status": "success", "message": f"{stream_name} registered"}
     
-    async def stream_loop(self, stream:PlotuneStream):
-        logger.info("Producer stream loop started")
+    async def stream_loop(self, stream: PlotuneStream):
+        logger.info("Producer stream loop started (fair scheduling)")
 
         async def write(key, timestamp, value):
-            await stream.aproduce(key=key,timestamp=timestamp, value=value)
+            await stream.aproduce(key=key, timestamp=timestamp, value=value)
 
         while True:
-            data = await self.central_queue.get() # {'timestamp': 1766495625.7477462, 'value': 101.67754291604562, 'signal_name': 'Signal_2cf5_001', 'signal_type': 'random_walk'}
-            print(data)
-            await write(key = data.get("signal_name"), timestamp=data.get("timestamp"), value=data.get("value"))
-            await asyncio.sleep(self.write_interval)
+            try:
+                async with self._bridge_lock:
+                    if not self.bridge_order:
+                        
+                        await asyncio.sleep(0.1)
+                        continue
+                    
+                    current_bridge_name = self.bridge_order[0]
+                    self.bridge_order.rotate(-1)
+                    
+                    bridge_info = self.bridges.get(current_bridge_name)
+                
+                if bridge_info:
+                    queue = bridge_info["queue"]
+                    
+                    try:
+                        data = queue.get_nowait()
+                        
+                        await write(
+                            key=data.get("signal_name"),
+                            timestamp=data.get("timestamp"),
+                            value=data.get("value")
+                        )
+                        
+                        await asyncio.sleep(self.write_interval)
+                        
+                    except asyncio.QueueEmpty:
+                        await asyncio.sleep(0.01)
+                    except Exception as e:
+                        logger.error(f"Error processing data from {current_bridge_name}: {e}")
+                else:
+                    await asyncio.sleep(0.01)
+                    
+            except Exception as e:
+                logger.error(f"Error in stream_loop: {e}")
+                await asyncio.sleep(1)
 
     async def listen_stream(self, msg: dict):
         data = msg.get("payload")
@@ -115,7 +166,6 @@ class StreamAgent:
 
         self.signals[key].append(Payload(value=value, time=_time))
 
-        
     async def stream(
         self,
         signal_name: str,
@@ -123,36 +173,31 @@ class StreamAgent:
         data: Any,
     ) -> None:
         logger.info("Client requested signal '%s'", signal_name)
-        signal = None
-        if signal_name in self.signals:
-            signal = self.signals[signal_name]
-
-        if not signal:
-            websocket.close(1000, "Signal not found")
+        
+        if signal_name not in self.signals:
+            await websocket.close(1000, "Signal not found")
+            return
+            
+        signal = self.signals[signal_name]
 
         # Historically
         for payload in sorted(signal.data, key=lambda p: p.time):
-            await websocket.send_json(
-                {
-                    "timestamp": payload.time,
-                    "value": payload.value,
-                }
-            )
+            await websocket.send_json({
+                "timestamp": payload.time,
+                "value": payload.value,
+            })
         
         queue = signal.subscribe()
         # Real-time
         try:
             while True:
                 payload = await queue.get()
-                await websocket.send_json(
-                    {
-                        "timestamp": payload.time,
-                        "value": payload.value,
-                    }
-                )
+                await websocket.send_json({
+                    "timestamp": payload.time,
+                    "value": payload.value,
+                })
         except WebSocketDisconnect:
             signal.unsubscribe(queue)
-        
 
     @property
     def api(self) -> FastAPI:

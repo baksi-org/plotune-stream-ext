@@ -62,10 +62,6 @@ class Bridge:
                                     break
                                 await asyncio.sleep(self.interval)
                             except asyncio.QueueFull:
-                                logger.warning(
-                                    "[%s] Queue full, dropping message",
-                                    self.name,
-                                )
                                 await asyncio.sleep(self.interval*10)
 
                 except aiohttp.ClientConnectorError as e:
