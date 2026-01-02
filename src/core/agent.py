@@ -31,12 +31,14 @@ class StreamAgent:
         self.signals: Dict[str, ConsumeSignal] = {}
         self._signal_lock = asyncio.Lock()
 
-        self.bridges: Dict[str, dict] = {}  # variable.name -> {"bridge": Bridge, "queue": asyncio.Queue}
-        
+        self.bridges: Dict[str, dict] = (
+            {}
+        )  # variable.name -> {"bridge": Bridge, "queue": asyncio.Queue}
+
         # Round-robin
         self.bridge_order = deque()
         self._bridge_lock = asyncio.Lock()
-        
+
         self._stream_producer_status = False
         self._register_events()
 
@@ -51,35 +53,30 @@ class StreamAgent:
 
     async def on_bridge(self, variable: Variable):
         print(f"{variable.name} requested to stream")
-                
-        bridge = Bridge(
-            variable, 
-            secure=False, 
-            interval=self.bridge_interval
-        )
-        
+
+        bridge = Bridge(variable, secure=False, interval=self.bridge_interval)
+
         q = bridge.start()
-        
+
         async with self._bridge_lock:
             self.bridges[variable.name] = {
                 "bridge": bridge,
                 "queue": q,
-                "variable": variable
+                "variable": variable,
             }
             self.bridge_order.append(variable.name)
-            
+
         print(f"{variable.name} bridged with separate queue")
 
     async def on_unbridge(self, variable: Variable):
         print(f"{variable.name} requested to remove from stream")
-        
+
         async with self._bridge_lock:
             if variable.name in self.bridges:
                 bridge_info = self.bridges[variable.name]
                 await bridge_info["bridge"].stop()
                 del self.bridges[variable.name]
-                
-                
+
                 if variable.name in self.bridge_order:
                     self.bridge_order.remove(variable.name)
 
@@ -89,14 +86,16 @@ class StreamAgent:
 
     async def _new_connection(self, data: dict) -> Dict[str, str]:
         print("Form delivered")
-        
+
         stream = form_dict_to_input(data)
         stream_name = stream.stream_name
         stream_type = stream.stream_type
 
         stream = self.runtime.create_stream(stream_name)
-        asyncio.run_coroutine_threadsafe(self.runtime._ensure_stream_running(stream), self.runtime.loop)
-        
+        asyncio.run_coroutine_threadsafe(
+            self.runtime._ensure_stream_running(stream), self.runtime.loop
+        )
+
         if stream_type == "consumer":
             stream.on_consume()(self.listen_stream)
 
@@ -104,7 +103,7 @@ class StreamAgent:
             asyncio.create_task(self.stream_loop(stream))
 
         return {"status": "success", "message": f"{stream_name} registered"}
-    
+
     async def stream_loop(self, stream: PlotuneStream):
         logger.info("Producer stream loop started (fair scheduling)")
 
@@ -115,36 +114,38 @@ class StreamAgent:
             try:
                 async with self._bridge_lock:
                     if not self.bridge_order:
-                        
+
                         await asyncio.sleep(0.1)
                         continue
-                    
+
                     current_bridge_name = self.bridge_order[0]
                     self.bridge_order.rotate(-1)
-                    
+
                     bridge_info = self.bridges.get(current_bridge_name)
-                
+
                 if bridge_info:
                     queue = bridge_info["queue"]
-                    
+
                     try:
                         data = queue.get_nowait()
-                        
+
                         await write(
                             key=data.get("signal_name"),
                             timestamp=data.get("timestamp"),
-                            value=data.get("value")
+                            value=data.get("value"),
                         )
-                        
+
                         await asyncio.sleep(self.write_interval)
-                        
+
                     except asyncio.QueueEmpty:
                         await asyncio.sleep(0.01)
                     except Exception as e:
-                        logger.error(f"Error processing data from {current_bridge_name}: {e}")
+                        logger.error(
+                            f"Error processing data from {current_bridge_name}: {e}"
+                        )
                 else:
                     await asyncio.sleep(0.01)
-                    
+
             except Exception as e:
                 logger.error(f"Error in stream_loop: {e}")
                 await asyncio.sleep(1)
@@ -173,29 +174,33 @@ class StreamAgent:
         data: Any,
     ) -> None:
         logger.info("Client requested signal '%s'", signal_name)
-        
+
         if signal_name not in self.signals:
             await websocket.close(1000, "Signal not found")
             return
-            
+
         signal = self.signals[signal_name]
 
         # Historically
         for payload in sorted(signal.data, key=lambda p: p.time):
-            await websocket.send_json({
-                "timestamp": payload.time,
-                "value": payload.value,
-            })
-        
+            await websocket.send_json(
+                {
+                    "timestamp": payload.time,
+                    "value": payload.value,
+                }
+            )
+
         queue = signal.subscribe()
         # Real-time
         try:
             while True:
                 payload = await queue.get()
-                await websocket.send_json({
-                    "timestamp": payload.time,
-                    "value": payload.value,
-                })
+                await websocket.send_json(
+                    {
+                        "timestamp": payload.time,
+                        "value": payload.value,
+                    }
+                )
         except WebSocketDisconnect:
             signal.unsubscribe(queue)
 
@@ -222,7 +227,7 @@ class StreamAgent:
         )
 
         return self._runtime
-    
+
     def start(self) -> None:
         print("Starting Stream Agent")
         self.runtime.start()

@@ -10,13 +10,14 @@ logger = logging.getLogger("bridge")
 
 
 class Bridge:
-    def __init__(self, 
-                 variable: Variable, 
-                 queue_size: int = 100, 
-                 secure:bool = True, 
-                 queue:asyncio.Queue = None,
-                 interval:float = 0.02
-                 ):
+    def __init__(
+        self,
+        variable: Variable,
+        queue_size: int = 100,
+        secure: bool = True,
+        queue: asyncio.Queue = None,
+        interval: float = 0.02,
+    ):
         self.variable = variable
         self.name = variable.name
         self.interval = interval
@@ -62,7 +63,7 @@ class Bridge:
                                     break
                                 await asyncio.sleep(self.interval)
                             except asyncio.QueueFull:
-                                await asyncio.sleep(self.interval*10)
+                                await asyncio.sleep(self.interval * 10)
 
                 except aiohttp.ClientConnectorError as e:
                     logger.warning("[%s] Connect failed: %s", self.name, e)
@@ -71,9 +72,7 @@ class Bridge:
                     logger.exception("[%s] Unexpected error", self.name)
 
                 if self._running:
-                    logger.info(
-                        "[%s] Reconnecting in %ss", self.name, backoff
-                    )
+                    logger.info("[%s] Reconnecting in %ss", self.name, backoff)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 30)
 

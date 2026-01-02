@@ -4,10 +4,12 @@ from utils.constant_helper import get_config
 
 from dataclasses import dataclass
 
+
 @dataclass
 class StreamInput:
-    stream_type:str
-    stream_name:str
+    stream_type: str
+    stream_name: str
+
 
 def dynamic_form() -> dict:
     """
@@ -44,8 +46,7 @@ def dynamic_form() -> dict:
     base_url = f"http://{host}:{port}"
 
     (
-        form.add_group("Actions")
-        .add_button(
+        form.add_group("Actions").add_button(
             "start_button",
             "Visit",
             {
@@ -74,6 +75,5 @@ def form_dict_to_input(data: dict) -> StreamInput:
             return default
 
     return StreamInput(
-        stream_type=data.get("stream_type"),
-        stream_name=data.get("stream_name")
+        stream_type=data.get("stream_type"), stream_name=data.get("stream_name")
     )
